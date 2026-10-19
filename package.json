@@ -1,0 +1,41 @@
+{
+  "name": "pi-glovebox",
+  "version": "0.1.0",
+  "description": "Run Pi's bash, read, write and edit tools in a separate sandbox, reached over a Unix socket",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "sandbox",
+    "bubblewrap"
+  ],
+  "license": "MIT",
+  "author": "Peter Ferenczy <ggpeti@gmail.com>",
+  "homepage": "https://github.com/421anon/pi-glovebox#readme",
+  "bugs": "https://github.com/421anon/pi-glovebox/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/421anon/pi-glovebox.git"
+  },
+  "type": "module",
+  "bin": {
+    "pi-glovebox-server": "bin/pi-glovebox-server.mjs"
+  },
+  "files": [
+    "bin",
+    "extensions"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
