@@ -23,18 +23,20 @@ const ownPaths = [ownFile, path.dirname(ownFile)];
 const ownTools = ["bash", "read", "write", "edit"];
 // The largest delay setTimeout accepts; Pi's own bash rejects longer timeouts the same way.
 const maxTimeoutMs = 2147483647;
-const frameOutput = 1;
+const frameStdout = 1;
 const frameExit = 2;
 const frameFailure = 3;
+const frameStderr = 4;
 
 type Request = { argv: string[]; cwd: string; stdin?: string };
 type Options = { onData?: (data: Buffer) => void; signal?: AbortSignal; timeout?: number };
-type Result = { output: Buffer; exitCode: number | null };
+type Result = { stdout: Buffer; stderr: Buffer; exitCode: number | null };
 
 const run = (request: Request, { onData, signal, timeout }: Options = {}) =>
 	new Promise<Result>((resolve, reject) => {
 		const socket = net.createConnection(socketPath);
-		const output: Buffer[] = [];
+		const stdout: Buffer[] = [];
+		const stderr: Buffer[] = [];
 		let received = Buffer.alloc(0);
 		let exitCode: number | null | undefined;
 		let failure: string | undefined;
@@ -51,9 +53,9 @@ const run = (request: Request, { onData, signal, timeout }: Options = {}) =>
 			received = Buffer.concat([received, chunk]);
 			while (received.length >= 5 && received.length >= 5 + received.readUInt32BE(1)) {
 				const payload = received.subarray(5, 5 + received.readUInt32BE(1));
-				if (received[0] === frameOutput) {
+				if (received[0] === frameStdout || received[0] === frameStderr) {
 					if (onData) onData(payload);
-					else output.push(payload);
+					else (received[0] === frameStdout ? stdout : stderr).push(payload);
 				} else if (received[0] === frameExit) {
 					exitCode = JSON.parse(payload.toString());
 				} else if (received[0] === frameFailure) {
@@ -68,17 +70,18 @@ const run = (request: Request, { onData, signal, timeout }: Options = {}) =>
 			signal?.removeEventListener("abort", abort);
 			if (failure !== undefined) reject(new Error(failure));
 			else if (exitCode === undefined) reject(new Error("pi-glovebox: connection closed before the command finished"));
-			else resolve({ output: Buffer.concat(output), exitCode });
+			else resolve({ stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), exitCode });
 		});
 
 		if (signal?.aborted) abort();
 		else socket.write(`${JSON.stringify(request)}\n`);
 	});
 
+// File contents come from stdout alone, so warnings a sandboxed tool prints on stderr never end up in them.
 const succeed = async (argv: string[], stdin?: string) => {
-	const { output, exitCode } = await run({ argv, cwd: "/", stdin });
-	if (exitCode !== 0) throw new Error(output.toString().trim() || `exit code ${exitCode}`);
-	return output;
+	const { stdout, stderr, exitCode } = await run({ argv, cwd: "/", stdin });
+	if (exitCode !== 0) throw new Error(stderr.toString().trim() || `exit code ${exitCode}`);
+	return stdout;
 };
 
 const shell = (script: string, file: string, stdin?: string) =>

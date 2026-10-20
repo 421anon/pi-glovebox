@@ -13,7 +13,7 @@ Every call becomes one command run by `pi-glovebox-server` inside your sandbox:
 | `write` | `mkdir -p`, then `cat > file` with the content on stdin |
 | `edit` | `: < file && : >> file` to check access, `cat`, `cat > file` |
 
-Your `!` and `!!` commands run the same way as `bash`. Commands get the server's environment, not Pi's. Aborts and timeouts close the connection, and the server kills the command's process group. Like Pi's own `bash`, a command counts as finished once it has exited and any background processes it started have printed nothing for 100 ms; those processes keep running.
+Your `!` and `!!` commands run the same way as `bash`. Commands get the server's environment, not Pi's. Aborts and timeouts close the connection, and the server kills the command's process group. Like Pi's own `bash`, a command counts as finished once it has exited and any background processes it started have printed nothing for 100 ms. Those processes keep running, but nothing reads their output any more: if one later writes to the stdout or stderr it inherited, it gets `SIGPIPE` and usually dies, so redirect the output of anything meant to outlive the command (`server > log 2>&1 &`).
 
 pi-glovebox also blocks calls to tools that would run in Pi's process instead, returning an error the model sees:
 
@@ -63,7 +63,7 @@ This sandbox sees the project read-write, `/nix` and the directories on your `PA
 
 ## Protocol
 
-One connection runs one command. The client sends one line of JSON, `{"argv": [...], "cwd": "/abs/path", "stdin": "optional text"}`. The server answers with frames of a 1-byte type, a 4-byte big-endian length and a payload: type 1 carries output (stdout and stderr as they arrive); type 2 carries the exit code as JSON (`null` if the command was killed by a signal); type 3 carries an error message if the command could not start, such as a missing `cwd`. Either type 2 or type 3 comes last, then the server closes the connection. Closing the connection early, including only its writing side, kills the command's process group, so keep it fully open until the last frame; a malformed request closes it without running anything.
+One connection runs one command. The client sends one line of JSON, `{"argv": [...], "cwd": "/abs/path", "stdin": "optional text"}`. The server answers with frames of a 1-byte type, a 4-byte big-endian length and a payload: type 1 carries stdout and type 4 carries stderr, each as it arrives; type 2 carries the exit code as JSON (`null` if the command was killed by a signal); type 3 carries an error message if the command could not start, such as a missing `cwd`. Either type 2 or type 3 comes last, then the server closes the connection. Closing the connection early, including only its writing side, kills the command's process group, so keep it fully open until the last frame; a malformed request closes it without running anything. `read` and `edit` take file contents from stdout alone and the file tools report errors from stderr, so warnings a tool in the sandbox prints on stderr never end up in a file.
 
 ## License
 

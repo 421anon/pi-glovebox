@@ -88,6 +88,14 @@ test("keeps background output the client has not read yet", async () => {
 	assert.deepEqual(result.at(-1), { type: 2, payload: Buffer.from("0") });
 });
 
+test("keeps stderr apart from stdout", async () => {
+	const result = await frames({ argv: ["sh", "-c", "echo out; echo err >&2; echo more"] });
+	assert.equal(outputOf(result).toString(), "out\nmore\n");
+	const stderr = Buffer.concat(result.filter(({ type }) => type === 4).map(({ payload }) => payload));
+	assert.equal(stderr.toString(), "err\n");
+	assert.deepEqual(result.at(-1), { type: 2, payload: Buffer.from("0") });
+});
+
 test("reports a command that cannot start as a failure, not an exit code", async () => {
 	for (const [request, message] of [
 		[{ argv: ["true"], cwd: path.join(directory, "missing") }, `Working directory does not exist: ${path.join(directory, "missing")}`],

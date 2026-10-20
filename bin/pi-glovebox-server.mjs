@@ -3,9 +3,10 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import net from "node:net";
 
-const output = 1;
+const stdout = 1;
 const exit = 2;
 const failure = 3;
+const stderr = 4;
 // Background processes can hold stdout and stderr open after the command exits. Like Pi's own bash,
 // stop waiting for their output once none has arrived for this long.
 const quietMs = 100;
@@ -44,11 +45,11 @@ net
       }, quietMs);
     };
 
-    const forward = (stream) =>
+    const forward = (stream, type) =>
       stream.on("data", (chunk) => {
         if (finished) return;
         if (exited) finishWhenQuiet();
-        if (socket.write(frame(output, chunk))) return;
+        if (socket.write(frame(type, chunk))) return;
         stream.pause();
         socket.once("drain", () => stream.resume());
       });
@@ -90,8 +91,8 @@ net
       } catch (error) {
         return finish(failure, error.message);
       }
-      forward(child.stdout);
-      forward(child.stderr);
+      forward(child.stdout, stdout);
+      forward(child.stderr, stderr);
       child.on("error", (error) => finish(failure, error.message));
       child.on("exit", () => {
         exited = true;
