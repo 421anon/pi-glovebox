@@ -1,6 +1,6 @@
 {
   "name": "pi-glovebox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Run Pi's bash, read, write and edit tools in a separate sandbox, reached over a Unix socket",
   "keywords": [
     "pi-package",
