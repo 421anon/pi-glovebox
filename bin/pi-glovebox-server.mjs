@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import net from "node:net";
 
 const output = 1;
 const exit = 2;
+const failure = 3;
+// Background processes can hold stdout and stderr open after the command exits. Like Pi's own bash,
+// stop waiting for their output once none has arrived for this long.
+const quietMs = 100;
 
 const frame = (type, payload) => {
   const header = Buffer.alloc(5);
@@ -14,18 +19,35 @@ const frame = (type, payload) => {
 
 net
   .createServer((socket) => {
-    let received = Buffer.alloc(0);
+    const received = [];
     let child;
     let exited = false;
+    let finished = false;
+    let quiet;
 
-    const finish = (code) => {
-      if (exited) return;
-      exited = true;
-      socket.end(frame(exit, Buffer.from(JSON.stringify(code))));
+    const finish = (type, payload) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(quiet);
+      socket.end(frame(type, Buffer.from(payload)));
+    };
+
+    const finishWhenQuiet = () => {
+      clearTimeout(quiet);
+      if (finished) return;
+      quiet = setTimeout(() => {
+        // A paused stream still holds output the client has not taken yet.
+        if (child.stdout.isPaused() || child.stderr.isPaused()) return finishWhenQuiet();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish(exit, JSON.stringify(child.exitCode));
+      }, quietMs);
     };
 
     const forward = (stream) =>
       stream.on("data", (chunk) => {
+        if (finished) return;
+        if (exited) finishWhenQuiet();
         if (socket.write(frame(output, chunk))) return;
         stream.pause();
         socket.once("drain", () => stream.resume());
@@ -33,21 +55,27 @@ net
 
     socket.on("error", () => {});
     socket.on("close", () => {
-      if (!child || exited) return;
+      if (finished) return;
+      finished = true;
+      clearTimeout(quiet);
+      if (!child) return;
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch {}
+      // Drain what the killed processes left behind so the child can be reaped.
+      child.stdout.resume();
+      child.stderr.resume();
     });
 
     socket.on("data", function onRequest(chunk) {
-      received = Buffer.concat([received, chunk]);
-      const end = received.indexOf(10);
-      if (end < 0) return;
+      const end = chunk.indexOf(10);
+      if (end < 0) return void received.push(chunk);
+      received.push(chunk.subarray(0, end));
       socket.off("data", onRequest);
 
       let request;
       try {
-        request = JSON.parse(received.subarray(0, end).toString());
+        request = JSON.parse(Buffer.concat(received).toString());
       } catch {}
       const valid =
         Array.isArray(request?.argv) &&
@@ -56,19 +84,20 @@ net
         typeof request.cwd === "string" &&
         (request.stdin === undefined || typeof request.stdin === "string");
       if (!valid) return socket.destroy();
+      if (!existsSync(request.cwd)) return finish(failure, `Working directory does not exist: ${request.cwd}`);
       try {
         child = spawn(request.argv[0], request.argv.slice(1), { cwd: request.cwd, detached: true });
       } catch (error) {
-        socket.write(frame(output, Buffer.from(`${error.message}\n`)));
-        return finish(null);
+        return finish(failure, error.message);
       }
       forward(child.stdout);
       forward(child.stderr);
-      child.on("error", (error) => {
-        socket.write(frame(output, Buffer.from(`${error.message}\n`)));
-        finish(null);
+      child.on("error", (error) => finish(failure, error.message));
+      child.on("exit", () => {
+        exited = true;
+        finishWhenQuiet();
       });
-      child.on("close", (code) => finish(code));
+      child.on("close", (code) => finish(exit, JSON.stringify(code)));
       child.stdin.on("error", () => {});
       child.stdin.end(request.stdin ?? "");
     });

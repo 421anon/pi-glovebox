@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	type BashOperations,
 	createBashTool,
 	createEditTool,
 	createReadTool,
@@ -20,6 +21,11 @@ const imageSniffBytes = "4100";
 const ownFile = realpathSync(fileURLToPath(import.meta.url));
 const ownPaths = [ownFile, path.dirname(ownFile)];
 const ownTools = ["bash", "read", "write", "edit"];
+// The largest delay setTimeout accepts; Pi's own bash rejects longer timeouts the same way.
+const maxTimeoutMs = 2147483647;
+const frameOutput = 1;
+const frameExit = 2;
+const frameFailure = 3;
 
 type Request = { argv: string[]; cwd: string; stdin?: string };
 type Options = { onData?: (data: Buffer) => void; signal?: AbortSignal; timeout?: number };
@@ -31,6 +37,7 @@ const run = (request: Request, { onData, signal, timeout }: Options = {}) =>
 		const output: Buffer[] = [];
 		let received = Buffer.alloc(0);
 		let exitCode: number | null | undefined;
+		let failure: string | undefined;
 
 		const stop = (error: Error) => {
 			socket.destroy();
@@ -44,11 +51,13 @@ const run = (request: Request, { onData, signal, timeout }: Options = {}) =>
 			received = Buffer.concat([received, chunk]);
 			while (received.length >= 5 && received.length >= 5 + received.readUInt32BE(1)) {
 				const payload = received.subarray(5, 5 + received.readUInt32BE(1));
-				if (received[0] === 1) {
+				if (received[0] === frameOutput) {
 					if (onData) onData(payload);
 					else output.push(payload);
-				} else {
+				} else if (received[0] === frameExit) {
 					exitCode = JSON.parse(payload.toString());
+				} else if (received[0] === frameFailure) {
+					failure = payload.toString();
 				}
 				received = received.subarray(5 + payload.length);
 			}
@@ -57,7 +66,8 @@ const run = (request: Request, { onData, signal, timeout }: Options = {}) =>
 		socket.on("close", () => {
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", abort);
-			if (exitCode === undefined) reject(new Error("pi-glovebox: connection closed before the command finished"));
+			if (failure !== undefined) reject(new Error(failure));
+			else if (exitCode === undefined) reject(new Error("pi-glovebox: connection closed before the command finished"));
 			else resolve({ output: Buffer.concat(output), exitCode });
 		});
 
@@ -73,6 +83,15 @@ const succeed = async (argv: string[], stdin?: string) => {
 
 const shell = (script: string, file: string, stdin?: string) =>
 	succeed(["bash", "-c", script, "pi-glovebox", file], stdin).then(() => {});
+
+const exec: BashOperations["exec"] = async (command, cwd, { onData, signal, timeout }) => {
+	if (timeout !== undefined) {
+		if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("Invalid timeout: must be a finite number of seconds");
+		if (timeout * 1000 > maxTimeoutMs) throw new Error(`Invalid timeout: maximum is ${maxTimeoutMs / 1000} seconds`);
+	}
+	const { exitCode } = await run({ argv: ["bash", "-c", command], cwd }, { onData, signal, timeout });
+	return { exitCode };
+};
 
 const detectImageMimeType = async (file: string) => {
 	const head = await succeed(["head", "-c", imageSniffBytes, "--", file]);
@@ -93,17 +112,12 @@ export default function (pi: ExtensionAPI) {
 			return { block: true, reason: `pi-glovebox: ${toolName} is built into Pi and would run outside the sandbox` };
 		}
 		if (ownTools.includes(toolName) && !(source && existsSync(source.path) && ownPaths.includes(realpathSync(source.path)))) {
-			return { block: true, reason: `pi-glovebox: ${toolName} comes from ${source?.path}, not pi-glovebox, and would run outside the sandbox` };
+			return { block: true, reason: `pi-glovebox: ${toolName} comes from ${source?.path}, not this pi-glovebox (${ownFile}), and would run outside the sandbox` };
 		}
 	});
-	pi.registerTool(
-		createBashTool(cwd, {
-			operations: {
-				exec: (command, directory, options) =>
-					run({ argv: ["bash", "-c", command], cwd: directory }, options).then(({ exitCode }) => ({ exitCode })),
-			},
-		}),
-	);
+	pi.on("user_bash", () => ({ operations: { exec } }));
+	// The sandbox gets the server's environment, so the PI_* variables Pi would advertise never reach it.
+	pi.registerTool(createBashTool(cwd, { operations: { exec }, exposeSessionEnvironment: false }));
 	pi.registerTool(
 		createReadTool(cwd, {
 			operations: {
