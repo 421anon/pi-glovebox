@@ -27,7 +27,8 @@
   "pi": {
     "extensions": [
       "./extensions/index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/421anon/pi-glovebox/main/assets/glovebox.webp"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.85.0"
